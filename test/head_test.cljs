@@ -83,7 +83,12 @@
    ;; The error path, matched on stdout, stderr AND exit status since
    ;; :io/write-error (wire 39) landed. `-n 00` and `-n x` are here because
    ;; head echoes the count AS GIVEN rather than re-rendering it.
-   ["-n" "0" "three"] ["-n" "00" "three"] ["-n" "x" "three"]])
+   ["-n" "0" "three"] ["-n" "00" "three"] ["-n" "x" "three"]
+   ;; A MISSING operand, matched on stderr since wire 35 gained an EXISTS
+   ;; form. The read form traps and a trap cannot be caught, so before it
+   ;; there was no way to notice -- this was `SIGILL` and exit 120 where
+   ;; head writes a message and exits 1.
+   ["missing"] ["-n" "2" "missing"]])
 
 (when-not amu-home (refuse "set AMU_HOME to an amu checkout"))
 (let [amu (.join path amu-home "bin" "amu")
@@ -135,7 +140,9 @@
     ;; Now the only thing that matters: run it.
     (let [results
           (for [names cases]
-            (let [argv (mapv #(if (or (str/starts-with? % "-") (not (contains? #{"twenty" "three" "nonl" "empty" "partial"} %)))
+            (let [argv (mapv #(if (or (str/starts-with? % "-")
+                                    (and (re-matches #"[0-9x]+" %)
+                                         (not (contains? #{"twenty" "three" "nonl" "empty" "partial" "missing"} %))))
                                 %
                                 (.join path (.realpathSync fs (.join path tmp "data")) %))
                              names)

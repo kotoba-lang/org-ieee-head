@@ -49,6 +49,18 @@ b" 1 2))
 (defn slurp-file [path :string] :string
   (typed-cap-call :fs/app-data :string :string path))
 
+;; Is PATH a file this command may read? Wire 35's EXISTS form answers "1" or
+;; "0"; a path outside the granted scope answers "0", which is what the read
+;; form would trap on.
+;;
+;; This has to be ASKED. The read form TRAPS on a path it cannot serve, and a
+;; trap cannot be caught, so there is no way to notice afterwards -- which is
+;; why this command shipped saying a missing operand was not matched.
+(defn readable? [path :string] :bool
+  (string=? (typed-cap-call :fs/app-data :string :string
+                            (string-concat path "EXISTS_SEP"))
+            "1"))
+
 (defn digit-text [d :i64] :string
   (string-substring "0123456789" d (+ d 1)))
 
@@ -96,10 +108,19 @@ b" 1 2))
         (emit-error (arg "1"))
         (emit-error (nl))
         1)
-      (let [text (slurp-file path)
-            cut (after-nth-newline text 0 count)]
+      (if (readable? path)
+        (let [text (slurp-file path)
+              cut (after-nth-newline text 0 count)]
+          (do
+            (if (< cut 0)
+              (emit text)
+              (emit (string-substring text 0 cut)))
+            0))
+        ;; Byte-identical to /usr/bin/head's, including the operand echoed as
+        ;; given. Exit 1, nothing on stdout.
         (do
-          (if (< cut 0)
-            (emit text)
-            (emit (string-substring text 0 cut)))
-          0)))))
+          (emit-error "head: ")
+          (emit-error path)
+          (emit-error ": No such file or directory")
+          (emit-error (nl))
+          1)))))

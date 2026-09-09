@@ -21,7 +21,7 @@ A file with fewer than N newlines is emitted **whole and unchanged**.
 ## Measured against the system utility
 
 `test/head_test.cljs` compiles the guest, packages it, **runs the binary**,
-and compares bytes *and exit status* against `/usr/bin/head`. Fifteen cases,
+and compares bytes *and exit status* against `/usr/bin/head`. Seventeen cases,
 all identical.
 
 The boundaries are deliberate: `-n 1` is the low edge, `-n 20` is the file's
@@ -55,13 +55,31 @@ FAIL ["-n" "0" "three"] -> "" but /usr/bin/head says "" exits [1 1]
 Changing the message's two dashes to one fails the same three. Neither would
 have been visible to a suite that compared only stdout and status.
 
-**A missing operand is still not matched, and stderr does not fix it.** The
-read capability **traps** on a path it cannot serve rather than answering a
-result, so the guest never gets control back to report anything — measured
-2026-09-10: `SIGILL`, exit 120, where `/usr/bin/head` writes
-`head: PATH: No such file or directory` and exits 1. Reporting that needs the
-capability to answer `[:result T E]`, which is a change to its contract and
-not to this program.
+**A missing operand is matched too, since wire 35 gained an `EXISTS` form.**
+
+Stderr alone did not fix it. The read form **traps** on a path it cannot
+serve, and a trap cannot be caught, so the guest never got control back to
+report anything — `SIGILL`, exit 120. The proper answer is a capability
+returning `[:result T E]`, but the native gate admits
+`[:result-i64 :result-i64]` and not a result over a string, so that is a
+change to the *gate*. `"<path>EXISTS_SEP"` is a change to a request *form*,
+on a wire that already told three apart by an ASCII token.
+
+```
+head: /some/missing/file: No such file or directory
+```
+
+exit 1, nothing on stdout, byte-identical.
+
+A path **outside the granted scope** answers `0` — reported as absent rather
+than trapped or admitted. `./head /etc/passwd`, packaged for a different
+directory, says `No such file or directory` on a machine where that file
+exists: the command learns whether the operand it was handed is one it may
+read, and nothing else.
+
+Removing the check leaves those two cases failing as `exits [120 1]`;
+changing the message text leaves them failing as `exits [1 1]` with identical
+stdout.
 
 ## Capabilities
 
