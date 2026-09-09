@@ -79,7 +79,11 @@
    ["-n" "1" "twenty"] ["-n" "20" "twenty"]
    ;; More than the file has: emitted whole, unchanged.
    ["-n" "25" "twenty"] ["-n" "10" "three"]
-   ["-n" "2" "partial"] ["-n" "1" "nonl"]])
+   ["-n" "2" "partial"] ["-n" "1" "nonl"]
+   ;; The error path, matched on stdout, stderr AND exit status since
+   ;; :io/write-error (wire 39) landed. `-n 00` and `-n x` are here because
+   ;; head echoes the count AS GIVEN rather than re-rendering it.
+   ["-n" "0" "three"] ["-n" "00" "three"] ["-n" "x" "three"]])
 
 (when-not amu-home (refuse "set AMU_HOME to an amu checkout"))
 (let [amu (.join path amu-home "bin" "amu")
@@ -94,7 +98,7 @@
         blob (.join path tmp "head.bin")
         exe (.join path tmp "head")
         exe-big (.join path tmp "head-big")]
-    (.writeFileSync fs policy "{:allow #{[:cap/call 35] [:cap/call 37] [:cap/call 38]}}" "utf8")
+    (.writeFileSync fs policy "{:allow #{[:cap/call 35] [:cap/call 37] [:cap/call 38] [:cap/call 39]}}" "utf8")
     ;; The fixtures live in the tree the binary is packaged for. The native
     ;; loader refuses a relative request outright, so operands are absolute.
     (let [data (.join path tmp "data")]
@@ -123,7 +127,7 @@
       ;; the default 512 fuel counts almost nothing.
       (doseq [[out extra] [[exe ["--fuel" "5000000" "--string-pool" "4000000"]]]]
         (let [p (run "nbb" (into [packager "--code" blob "--offset" offset "--isa" "aarch64"
-                                  "--allow" "35,37,38"
+                                  "--allow" "35,37,38,39"
                                   "--fs-scope" (.realpathSync fs (.join path tmp "data"))
                                   "--output" out]
                                  extra) {})]
@@ -131,15 +135,21 @@
     ;; Now the only thing that matters: run it.
     (let [results
           (for [names cases]
-            (let [argv (mapv #(if (or (str/starts-with? % "-") (re-matches #"[0-9]+" %))
+            (let [argv (mapv #(if (or (str/starts-with? % "-") (not (contains? #{"twenty" "three" "nonl" "empty" "partial"} %)))
                                 %
                                 (.join path (.realpathSync fs (.join path tmp "data")) %))
                              names)
                   k (run exe argv {})
                   s (run system-head argv {})
+                  ;; stderr is compared too, now that there is a capability
+                  ;; that can write it. Without this the `-n 0` case would
+                  ;; pass on an empty stdout and the right exit status while
+                  ;; saying nothing -- which is what it did before wire 39.
                   same? (and (= (.toString (:out k) "base64") (.toString (:out s) "base64"))
+                             (= (.toString (:err k) "base64") (.toString (:err s) "base64"))
                              (= (:status k) (:status s)))]
               {:argv names :ok same? :kotoba (.toString (:out k) "utf8")
+               :kotoba-err (.toString (:err k) "utf8")
                :system (.toString (:out s) "utf8")
                :exit [(:status k) (:status s)]}))
           bad (remove :ok results)]

@@ -13,15 +13,21 @@
 ;;
 ;; Capabilities: :cli/args (38), :fs/app-data (35), :io/write (37).
 ;;
-;; ## The error paths are NOT matched, and that is a capability gap
+;; ## The error paths this can and cannot match
 ;;
-;; /usr/bin/head refuses `-n 0` with `head: illegal line count -- 0` on
-;; STDERR and exits 1, and reports a missing operand the same way. There is
-;; no stderr capability -- :io/write is fd 1 and only fd 1 -- so this cannot
-;; produce those bytes. It exits 1 for `-n 0` and prints nothing, which is
-;; the exit status without the message. The test asserts the SUCCESS paths
-;; byte for byte and says which cases it deliberately does not cover, rather
-;; than covering them wrongly.
+;; `-n 0` IS matched, byte for byte, since :io/write-error (wire 39) landed:
+;; /usr/bin/head writes `head: illegal line count -- 0` to stderr and exits
+;; 1, and so does this. That message is the guest's own decision, so having
+;; somewhere to write it was the whole gap.
+;;
+;; A MISSING OPERAND is not matched, and stderr does not fix it. The read
+;; capability TRAPS on a path it cannot serve rather than answering a
+;; result, so the guest never gets control back to report anything --
+;; measured 2026-09-10, `SIGILL` and exit 120 where /usr/bin/head writes
+;; `head: PATH: No such file or directory` and exits 1. Reporting that needs
+;; the capability to answer `[:result T E]`, which is a change to its
+;; contract and not to this program.
+
 (ns head.core (:export [main]))
 
 (defn arg [i :string] :string
@@ -29,6 +35,16 @@
 
 (defn emit [s :string] :string
   (typed-cap-call :io/write :string :string s))
+
+(defn emit-error [s :string] :string
+  (typed-cap-call :io/write-error :string :string s))
+
+;; A one-byte "\n", cut from a two-line literal: Kotoba source cannot write a
+;; control character and has no char-to-string builtin. head adds no newline
+;; to its OUTPUT -- this is only for the diagnostic line.
+(defn nl [] :string
+  (string-substring "a
+b" 1 2))
 
 (defn slurp-file [path :string] :string
   (typed-cap-call :fs/app-data :string :string path))
@@ -71,10 +87,15 @@
         count (if flagged? (parse-count (arg "1")) 10)
         path (if flagged? (arg "2") (arg "0"))]
     (if (< count 1)
-      ;; -n 0 and a non-numeric count: exit 1 with nothing on stdout. The
-      ;; message /usr/bin/head writes belongs on stderr, which no capability
-      ;; reaches.
-      1
+      ;; -n 0 and a non-numeric count. The message is byte-identical to
+      ;; /usr/bin/head's, including the two spaces around the dashes, and the
+      ;; count is echoed as GIVEN rather than re-rendered -- head reports the
+      ;; text it was handed, so `-n 00` reports `00`.
+      (do
+        (emit-error "head: illegal line count -- ")
+        (emit-error (arg "1"))
+        (emit-error (nl))
+        1)
       (let [text (slurp-file path)
             cut (after-nth-newline text 0 count)]
         (do

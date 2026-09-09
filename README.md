@@ -21,7 +21,7 @@ A file with fewer than N newlines is emitted **whole and unchanged**.
 ## Measured against the system utility
 
 `test/head_test.cljs` compiles the guest, packages it, **runs the binary**,
-and compares bytes *and exit status* against `/usr/bin/head`. Twelve cases,
+and compares bytes *and exit status* against `/usr/bin/head`. Fifteen cases,
 all identical.
 
 The boundaries are deliberate: `-n 1` is the low edge, `-n 20` is the file's
@@ -32,19 +32,36 @@ Verified to fail as well as pass: a default of 5 instead of 10 fails exactly
 one case, an off-by-one in the newline walk fails three, and emitting nothing
 when the file is shorter than N fails four.
 
-## The error paths are not matched, and that is a capability gap
+## One error path is matched now, and one still is not
 
-`/usr/bin/head` refuses `-n 0` with `head: illegal line count -- 0` and
-reports a missing operand with `head: FILE: No such file or directory` —
-both on **stderr**, both exiting 1.
+`-n 0` is matched **byte for byte on stderr**, since `:io/write-error`
+(wire 39) landed:
 
-There is no stderr capability. `:io/write` (wire 37) is fd 1 and only fd 1,
-so those bytes cannot be produced. This exits 1 for `-n 0` and prints
-nothing: the status without the message.
+```
+head: illegal line count -- 0
+```
 
-The suite asserts the success paths and **says which cases it does not
-cover**, rather than covering them wrongly. A `:io/write-error` capability is
-the next gap this family needs.
+exit 1, nothing on stdout. `-n 00` and `-n x` are in the suite because head
+echoes the count **as given** rather than re-rendering it.
+
+That comparison discriminates, and it is worth saying how. Reverting to what
+this did before wire 39 — exit 1 and say nothing — fails three cases **with
+identical stdout and identical exit status on both sides**:
+
+```
+FAIL ["-n" "0" "three"] -> "" but /usr/bin/head says "" exits [1 1]
+```
+
+Changing the message's two dashes to one fails the same three. Neither would
+have been visible to a suite that compared only stdout and status.
+
+**A missing operand is still not matched, and stderr does not fix it.** The
+read capability **traps** on a path it cannot serve rather than answering a
+result, so the guest never gets control back to report anything — measured
+2026-09-10: `SIGILL`, exit 120, where `/usr/bin/head` writes
+`head: PATH: No such file or directory` and exits 1. Reporting that needs the
+capability to answer `[:result T E]`, which is a change to its contract and
+not to this program.
 
 ## Capabilities
 
