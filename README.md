@@ -81,13 +81,48 @@ Removing the check leaves those two cases failing as `exits [120 1]`;
 changing the message text leaves them failing as `exits [1 1]` with identical
 stdout.
 
+## Several files: the separator counts what was written, not what was asked
+
+With **two or more** operands each file is introduced by `==> FILE <==`; with
+one there is no header at all. A blank line precedes every header **except
+the first one printed** — and *printed* is the exact word, because a missing
+operand does not count. Measured against `/usr/bin/head` 2026-09-10:
+
+```
+head -n 2 nope.txt h1.txt        h1's header has NO blank line before it
+head -n 2 h1.txt nope.txt h2.txt h2's header DOES
+```
+
+So the flag carried through the walk is "has a header been written", not "is
+this the first operand". The control for that is exact: counting a missing
+operand as printed fails **one** case, `missing three`, and no other — an
+implementation keying off position passes every other multi-operand case.
+
+An empty file still gets its header and contributes no body, so two
+separators land back to back. And a file with no trailing newline followed by
+another file is the seam worth pinning: the separator newline *completes* the
+unterminated line rather than producing a visibly blank one.
+
+Two further controls: emitting headers for a single file too fails 12 cases,
+and emitting the separator before every header including the first fails all
+9 multi-operand cases.
+
 ## Capabilities
 
-`:cli/args` (38), `:fs/app-data` (35), `:io/write` (37). Fuel, the string
-arena, the grant and the filesystem scope are all constants of the packaged
-binary — a caller cannot raise any of them.
+`:cli/args` (38), `:fs/app-data` (35), `:io/write` (37), `:io/write-error`
+(39). Fuel, the string arena, the grant and the filesystem scope are all
+constants of the packaged binary — a caller cannot raise any of them.
+
+## Five parameters
+
+The walk carries both the exit status and the header flag, and five
+parameters is the compiler's limit
+(`kotoba.compiler.frontend/max-parameters`, an ABI arity limit rather than a
+language decision). So the two are packed into one word — bit 0 for "a header
+has been written", bit 1 for "an operand was unreadable" — and only bit 1
+survives as the exit status.
 
 ## What this is not
 
-One operand. `/usr/bin/head` with several prints `==> name <==` banners,
-which this does not. No `-c` (bytes), and no reading standard input.
+No `-c` (bytes), and no reading standard input — with no file operand this
+exits 1 rather than pretending to have read an empty one.

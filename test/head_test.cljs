@@ -88,7 +88,29 @@
    ;; form. The read form traps and a trap cannot be caught, so before it
    ;; there was no way to notice -- this was `SIGILL` and exit 120 where
    ;; head writes a message and exits 1.
-   ["missing"] ["-n" "2" "missing"]])
+   ["missing"] ["-n" "2" "missing"]
+   ;; --- two or more operands ------------------------------------------
+   ;; Each file is introduced by `==> FILE <==`, and a single file gets no
+   ;; header at all.
+   ["three" "twenty"] ["-n" "2" "three" "twenty"]
+   ;; The same operand twice is not de-duplicated: two headers, two bodies.
+   ["three" "three"]
+   ;; An EMPTY file in the middle still gets a header and contributes no
+   ;; body, so two blank-line separators land back to back.
+   ["three" "empty" "twenty"]
+   ;; A file with NO trailing newline followed by another file -- whatever
+   ;; head does at that seam, this pins it.
+   ["-n" "1" "nonl" "three"]
+   ;; The separator rule is "a blank line before every header EXCEPT the
+   ;; first one PRINTED", and a missing operand does not count as printed.
+   ;; With the missing file first, the next header has no blank line before
+   ;; it; with it in the middle, the following header does. An
+   ;; implementation keying off the operand INDEX instead of what was
+   ;; written passes the second and fails the first.
+   ["missing" "three"] ["three" "missing" "twenty"] ["three" "missing"]
+   ;; Three operands, and the exit status must be 1 because one was missing
+   ;; even though two printed.
+   ["-n" "2" "three" "missing" "twenty"]])
 
 (when-not amu-home (refuse "set AMU_HOME to an amu checkout"))
 (let [amu (.join path amu-home "bin" "amu")

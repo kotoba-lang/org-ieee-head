@@ -93,11 +93,74 @@ b" 1 2))
         (+ from (+ i 1))
         (after-nth-newline s (+ from (+ i 1)) (- remaining 1))))))
 
+(defn decimal-of [n :i64] :string
+  (if (< n 10)
+    (digit-text n)
+    (string-concat (decimal-of (quot n 10))
+                   (digit-text (- n (* 10 (quot n 10)))))))
+
+;; --- several operands ----------------------------------------------------
+;;
+;; With TWO OR MORE files each one is introduced by `==> FILE <==`, and with
+;; one file there is no header at all. Measured against /usr/bin/head
+;; 2026-09-10.
+;;
+;; A blank line precedes every header EXCEPT the first one printed -- and
+;; "printed" is the exact word, because a missing operand does not count:
+;;
+;;   head -n 2 nope.txt h1.txt      h1's header has NO blank line before it
+;;   head -n 2 h1.txt nope.txt h2   h2's header DOES
+;;
+;; So the flag being carried is "has a header been written", not "is this
+;; the first operand". An EMPTY file still gets its header, and contributes
+;; nothing between it and the next blank line.
+(defn header [path :string] :string
+  (do (emit "==> ") (emit path) (emit " <==") (emit (nl))))
+
+;; Returns 1 once a header has been written, so the caller can carry it on.
+(defn show [path :string count :i64 multi? :i64 printed? :i64] :i64
+  (do
+    (if (= multi? 1)
+      (do (if (= printed? 1) (emit (nl)) "")
+          (header path))
+      "")
+    (let [text (slurp-file path)
+          cut (after-nth-newline text 0 count)]
+      (if (< cut 0)
+        (emit text)
+        (emit (string-substring text 0 cut))))
+    1))
+
+(defn complain [path :string] :i64
+  (do
+    (emit-error "head: ")
+    (emit-error path)
+    (emit-error ": No such file or directory")
+    (emit-error (nl))
+    1))
+
+;; `worst` is the exit status and `printed?` the header flag; both are
+;; carried because each operand can change either. Five parameters is the
+;; compiler's limit, which is why the two are not split apart.
+(defn each [i :i64 total :string count :i64 multi? :i64 state :i64] :i64
+  (if (string=? (decimal-of i) total)
+    state
+    (let [path (arg (decimal-of i))]
+      (if (readable? path)
+        (each (+ i 1) total count multi?
+              ;; bit 0 = a header has been written, bit 1 = something failed
+              (+ (show path count multi? (- state (* 2 (quot state 2))))
+                 (* 2 (quot state 2))))
+        (each (+ i 1) total count multi?
+              (do (complain path)
+                  (+ (- state (* 2 (quot state 2))) 2)))))))
+
 (defn main [] :i64
   (let [total (arg "")
-        flagged? (if (string=? total "3") (string=? (arg "0") "-n") false)
+        flagged? (if (string=? (arg "0") "-n") true false)
         count (if flagged? (parse-count (arg "1")) 10)
-        path (if flagged? (arg "2") (arg "0"))]
+        first-file (if flagged? 2 0)
+        files (- (parse-count total) first-file)]
     (if (< count 1)
       ;; -n 0 and a non-numeric count. The message is byte-identical to
       ;; /usr/bin/head's, including the two spaces around the dashes, and the
@@ -108,19 +171,11 @@ b" 1 2))
         (emit-error (arg "1"))
         (emit-error (nl))
         1)
-      (if (readable? path)
-        (let [text (slurp-file path)
-              cut (after-nth-newline text 0 count)]
-          (do
-            (if (< cut 0)
-              (emit text)
-              (emit (string-substring text 0 cut)))
-            0))
-        ;; Byte-identical to /usr/bin/head's, including the operand echoed as
-        ;; given. Exit 1, nothing on stdout.
-        (do
-          (emit-error "head: ")
-          (emit-error path)
-          (emit-error ": No such file or directory")
-          (emit-error (nl))
-          1)))))
+      (if (< files 1)
+        ;; No file operand. POSIX reads standard input; there is no stdin
+        ;; capability, so this refuses rather than pretending to have read an
+        ;; empty one.
+        1
+        ;; The state word carries the header flag in bit 0 and the failure in
+        ;; bit 1; only the failure survives as the exit status.
+        (quot (each first-file total count (if (> files 1) 1 0) 0) 2)))))
