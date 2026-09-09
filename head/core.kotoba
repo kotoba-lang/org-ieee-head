@@ -1,0 +1,84 @@
+;; head -- POSIX head (IEEE Std 1003.1) as a Kotoba command, for ONE operand.
+;;
+;;   head FILE          the first 10 lines
+;;   head -n N FILE     the first N lines, N >= 1
+;;
+;; ## What "the first N lines" is, measured
+;;
+;; It is the bytes up to and including the Nth newline, and NOTHING is added.
+;; Measured 2026-09-10 against /usr/bin/head on a file holding `x\ny` -- two
+;; lines, no trailing newline -- the answer is `x\ny`, three bytes. A version
+;; that reasoned in "lines" and re-joined them with newlines would answer
+;; four. A file with fewer than N newlines is emitted whole, unchanged.
+;;
+;; Capabilities: :cli/args (38), :fs/app-data (35), :io/write (37).
+;;
+;; ## The error paths are NOT matched, and that is a capability gap
+;;
+;; /usr/bin/head refuses `-n 0` with `head: illegal line count -- 0` on
+;; STDERR and exits 1, and reports a missing operand the same way. There is
+;; no stderr capability -- :io/write is fd 1 and only fd 1 -- so this cannot
+;; produce those bytes. It exits 1 for `-n 0` and prints nothing, which is
+;; the exit status without the message. The test asserts the SUCCESS paths
+;; byte for byte and says which cases it deliberately does not cover, rather
+;; than covering them wrongly.
+(ns head.core (:export [main]))
+
+(defn arg [i :string] :string
+  (typed-cap-call :cli/args :string :string i))
+
+(defn emit [s :string] :string
+  (typed-cap-call :io/write :string :string s))
+
+(defn slurp-file [path :string] :string
+  (typed-cap-call :fs/app-data :string :string path))
+
+(defn digit-text [d :i64] :string
+  (string-substring "0123456789" d (+ d 1)))
+
+;; Decimal TEXT to i64. The argument arrives as text and the guest has no
+;; text->number builtin, so the digits are folded one at a time; a byte that
+;; is not a digit answers -1, which the caller reads as "not a count".
+(defn digit-value [s :string i :i64] :i64
+  (let [c (string-code-point-at s i)]
+    (if (< c 48) -1 (if (> c 57) -1 (- c 48)))))
+
+(defn text->i64 [s :string i :i64 n :i64 acc :i64] :i64
+  (if (>= i n)
+    acc
+    (let [d (digit-value s i)]
+      (if (< d 0) -1 (text->i64 s (+ i 1) n (+ (* acc 10) d))))))
+
+(defn parse-count [s :string] :i64
+  (let [n (string-byte-length s)]
+    (if (= n 0) -1 (text->i64 s 0 n 0))))
+
+;; The byte offset ONE PAST the nth newline of S, or -1 when S has fewer than
+;; n of them. Walking with string-index-of never constructs an offset it has
+;; not reached, so a multi-byte line is not a special case.
+(defn after-nth-newline [s :string from :i64 remaining :i64] :i64
+  (let [rest (string-substring s from (string-byte-length s))
+        i (string-index-of rest "\n")]
+    (if (< i 0)
+      -1
+      (if (= remaining 1)
+        (+ from (+ i 1))
+        (after-nth-newline s (+ from (+ i 1)) (- remaining 1))))))
+
+(defn main [] :i64
+  (let [total (arg "")
+        flagged? (if (string=? total "3") (string=? (arg "0") "-n") false)
+        count (if flagged? (parse-count (arg "1")) 10)
+        path (if flagged? (arg "2") (arg "0"))]
+    (if (< count 1)
+      ;; -n 0 and a non-numeric count: exit 1 with nothing on stdout. The
+      ;; message /usr/bin/head writes belongs on stderr, which no capability
+      ;; reaches.
+      1
+      (let [text (slurp-file path)
+            cut (after-nth-newline text 0 count)]
+        (do
+          (if (< cut 0)
+            (emit text)
+            (emit (string-substring text 0 cut)))
+          0)))))
