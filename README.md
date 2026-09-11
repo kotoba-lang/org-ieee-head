@@ -20,7 +20,7 @@ A file with fewer than N newlines is emitted **whole and unchanged**.
 
 ## Measured against the system utility
 
-`test/head_test.cljs` compiles the guest, packages it, **runs the binary**,
+`test/head_test.cljk` compiles the guest, packages it, **runs the binary**,
 and compares bytes *and exit status* against `/usr/bin/head`. Seventeen cases,
 all identical.
 

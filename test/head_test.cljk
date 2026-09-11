@@ -1,4 +1,4 @@
-;; test/head_test.cljs — build the command and compare it with the system
+;; test/head_test.cljk — build the command and compare it with the system
 ;; head, byte for byte AND by exit status.
 ;;
 ;; SUCCESS paths only, deliberately. /usr/bin/head refuses `-n 0` and a
