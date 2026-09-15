@@ -114,7 +114,11 @@
 
 (when-not amu-home (refuse "set AMU_HOME to an amu checkout"))
 (let [amu (.join path amu-home "bin" "amu")
-      packager (.join path amu-home "scripts" "package-command.cljs")]
+      ;; `.cljk`, run through amu's own kbb: the `.cljs` spelling this named
+      ;; until 2026-09-15 no longer exists (the cljk rename), so the suite
+      ;; could not have run since.
+      packager (.join path amu-home "scripts" "package-command.cljk")
+      kbb (.join path amu-home "bin" "kbb")]
   (when-not (.existsSync fs amu) (refuse (str "no amu at " amu)))
   (when-not (.existsSync fs packager) (refuse (str "no packager at " packager)))
   (when-not (.existsSync fs system-head) (refuse (str "no " system-head " to compare against")))
@@ -153,7 +157,7 @@
       ;; point at a time, so the guest recursion is as long as the file and
       ;; the default 512 fuel counts almost nothing.
       (doseq [[out extra] [[exe ["--fuel" "5000000" "--string-pool" "4000000"]]]]
-        (let [p (run "nbb" (into [packager "--code" blob "--offset" offset "--isa" "aarch64"
+        (let [p (run "node" (into [kbb "--backend" "sci" packager "--code" blob "--offset" offset "--isa" "aarch64"
                                   "--allow" "35,37,38,39"
                                   "--fs-scope" (.realpathSync fs (.join path tmp "data"))
                                   "--output" out]
