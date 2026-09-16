@@ -122,7 +122,24 @@ language decision). So the two are packed into one word — bit 0 for "a header
 has been written", bit 1 for "an operand was unreadable" — and only bit 1
 survives as the exit status.
 
+## Standard input, in 64 KiB pieces
+
+With no file operand `head` reads standard input (wire 41 `:io/read`,
+2026-09-16). Measured over 1,268,018 Bash calls in 558 agent transcripts,
+that is 97% of how `head` is invoked (54,444 of 56,211), and `grep … | head`
+is the most frequent pipeline shape of all — until the wire landed every one
+of those exited 1 with nothing printed.
+
+It reads in 64 KiB chunks and stops at the chunk holding the Nth newline, so
+`yes | head -n 3` ends (28 ms, measured). Everything up to the Nth newline is
+output, so a chunk with fewer newlines than are still wanted is emitted whole
+and nothing accumulates; each chunk is read inside an `arena-scope` and
+reclaimed once written, which is what lets `-n 200000` push 12.8 MB through a
+4 MB string pool (in the suite). The first cut accumulated chunks instead and
+the pool grew as the square of the input — a chunk read at the pool's tail
+leaves the accumulator unable to tail-append — which `-n 20000` over 8 MB
+caught at exit 120.
+
 ## What this is not
 
-No `-c` (bytes), and no reading standard input — with no file operand this
-exits 1 rather than pretending to have read an empty one.
+No `-c` (bytes).
