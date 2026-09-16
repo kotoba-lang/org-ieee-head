@@ -2,6 +2,7 @@
 ;;
 ;;   head FILE          the first 10 lines
 ;;   head -n N FILE     the first N lines, N >= 1
+;;   ... | head [-n N]  the same, from standard input
 ;;
 ;; ## What "the first N lines" is, measured
 ;;
@@ -11,7 +12,21 @@
 ;; that reasoned in "lines" and re-joined them with newlines would answer
 ;; four. A file with fewer than N newlines is emitted whole, unchanged.
 ;;
-;; Capabilities: :cli/args (38), :fs/app-data (35), :io/write (37).
+;; Capabilities: :cli/args (38), :fs/app-data (35), :io/write (37),
+;; :io/read (41).
+;;
+;; ## Standard input, and why it is read in pieces
+;;
+;; Measured 2026-09-16 over 1,268,018 Bash calls in 558 agent transcripts:
+;; `head` is a LATER pipeline segment 97% of the time (54,444 of 56,211),
+;; and `grep ... | head` alone is the most frequent pipeline shape there is.
+;; So with no operand this reads standard input -- wire 41, which landed
+;; that day -- and reads it 64 KiB at a time, stopping at the chunk that
+;; holds the Nth newline. Two reasons, both measured: `yes | head` must end
+;; (the whole-input form would read forever), and the string pool is a
+;; budget of the binary, so an input larger than it would be REFUSED if
+;; slurped whole and is answered when the first chunk already has the lines
+;; (the suite feeds 8 MB into a 4 MB pool).
 ;;
 ;; ## The error paths this can and cannot match
 ;;
@@ -48,6 +63,11 @@ b" 1 2))
 
 (defn slurp-file [path :string] :string
   (typed-cap-call :fs/app-data :string :string path))
+
+;; Wire 41: a decimal request answers at most that many unread bytes of
+;; standard input, the empty string at EOF.
+(defn stdin [n :string] :string
+  (typed-cap-call :io/read :string :string n))
 
 ;; Is PATH a file this command may read? Wire 35's EXISTS form answers "1" or
 ;; "0"; a path outside the granted scope answers "0", which is what the read
@@ -92,6 +112,43 @@ b" 1 2))
       (if (= remaining 1)
         (+ from (+ i 1))
         (after-nth-newline s (+ from (+ i 1)) (- remaining 1))))))
+
+;; Scan S from FROM for the next REMAINING newlines in ONE walk. Answers the
+;; offset one past the last of them, or -(k + 1) with k the number still to
+;; find when S ran out -- so a chunked input is never rescanned from the
+;; start: the next call resumes at the old length with the count it was
+;; handed back.
+(defn scan-newlines [s :string from :i64 remaining :i64] :i64
+  (let [i (string-find-byte s 10 from)]
+    (if (< i 0)
+      (- 0 (+ remaining 1))
+      (if (= remaining 1)
+        (+ i 1)
+        (scan-newlines s (+ i 1) (- remaining 1))))))
+
+;; One chunk of standard input: everything up to the Nth newline is OUTPUT,
+;; so a chunk holding fewer than REMAINING newlines is emitted whole and only
+;; the count is carried -- nothing accumulates. Answers the newlines still to
+;; find, or -1 when the answer is complete (the Nth newline was in this chunk,
+;; or the input ended).
+(defn step [remaining :i64] :i64
+  (let [chunk (stdin "65536")]
+    (if (= 0 (string-byte-length chunk))
+      -1
+      (let [r (scan-newlines chunk 0 remaining)]
+        (if (>= r 0)
+          (do (emit (string-substring chunk 0 r)) -1)
+          (do (emit chunk) (- 0 (+ r 1))))))))
+
+;; Standard input, 64 KiB at a time. Each step runs in its own arena region,
+;; so the chunk it read is reclaimed when it returns and the pool never
+;; holds more than one chunk: measured 2026-09-16, accumulating the chunks
+;; instead made the pool grow as the SQUARE of the input (a chunk read at
+;; the pool's tail leaves the accumulator unable to tail-append, so every
+;; append copied both), and `-n 20000` over 8 MB was refused at a 4 MB pool.
+(defn head-stdin [remaining :i64] :i64
+  (let [next (arena-scope (step remaining))]
+    (if (< next 0) 0 (head-stdin next))))
 
 (defn decimal-of [n :i64] :string
   (if (< n 10)
@@ -172,10 +229,8 @@ b" 1 2))
         (emit-error (nl))
         1)
       (if (< files 1)
-        ;; No file operand. POSIX reads standard input; there is no stdin
-        ;; capability, so this refuses rather than pretending to have read an
-        ;; empty one.
-        1
+        ;; No file operand: standard input, in pieces (see the header).
+        (head-stdin count)
         ;; The state word carries the header flag in bit 0 and the failure in
         ;; bit 1; only the failure survives as the exit status.
         (quot (each first-file total count (if (> files 1) 1 0) 0) 2)))))

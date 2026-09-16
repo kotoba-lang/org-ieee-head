@@ -32,7 +32,10 @@
 
 (defn- run [cmd args opts]
   (let [r (.spawnSync cp cmd (clj->js args)
-                      (clj->js (merge {:encoding "buffer"} opts)))]
+                      ;; 64 MiB: the stdin cases below feed and expect more
+                      ;; than node's 1 MiB default, which killed /usr/bin/head
+                      ;; with ENOBUFS and a nil status (measured 2026-09-16).
+                      (clj->js (merge {:encoding "buffer" :maxBuffer 67108864} opts)))]
     {:status (.-status r) :out (.-stdout r) :err (.-stderr r)}))
 
 (defn- refuse [message]
@@ -110,7 +113,33 @@
    ["missing" "three"] ["three" "missing" "twenty"] ["three" "missing"]
    ;; Three operands, and the exit status must be 1 because one was missing
    ;; even though two printed.
-   ["-n" "2" "three" "missing" "twenty"]])
+   ["-n" "2" "three" "missing" "twenty"]
+   ;; --- standard input (wire 41, 2026-09-16) ---------------------------
+   ;; A case may be a map with :stdin; the argv then has no operand. This
+   ;; is 97% of how head is called in agent tool use (measured), and was
+   ;; exit 1 with nothing printed until the wire landed.
+   {:argv [] :stdin "twenty"}
+   {:argv ["-n" "3"] :stdin "twenty"}
+   {:argv ["-n" "1"] :stdin "nonl"}
+   {:argv ["-n" "20"] :stdin "twenty"}
+   {:argv ["-n" "25"] :stdin "twenty"}
+   {:argv [] :stdin "empty"}
+   {:argv ["-n" "2"] :stdin "partial"}
+   ;; The chunked read, measured rather than claimed: 8 MB of lines into a
+   ;; binary whose string pool is 4 MB. Slurped whole this is a pool refusal
+   ;; (SIGILL, exit 120); read 64 KiB at a time the first chunk already
+   ;; holds two newlines and the answer matches /usr/bin/head.
+   {:argv ["-n" "2"] :stdin :eight-megabytes}
+   ;; And the whole 8 MB is NOT what -n 2 must not print: a count that reads
+   ;; every chunk would still answer right here, so this one asks for more
+   ;; lines than the first chunk holds, forcing the resume path (from > 0).
+   {:argv ["-n" "20000"] :stdin :eight-megabytes}
+   ;; More output than the pool: 200,000 lines is 12.8 MB through a 4 MB
+   ;; pool, so this passes only if each chunk's bytes are reclaimed after
+   ;; they are written (arena-scope around the step).
+   {:argv ["-n" "200000"] :stdin :eight-megabytes}
+   ;; -n 0 on stdin: the diagnostic and exit 1, nothing read.
+   {:argv ["-n" "0"] :stdin "three"}])
 
 (when-not amu-home (refuse "set AMU_HOME to an amu checkout"))
 (let [amu (.join path amu-home "bin" "amu")
@@ -129,7 +158,7 @@
         blob (.join path tmp "head.bin")
         exe (.join path tmp "head")
         exe-big (.join path tmp "head-big")]
-    (.writeFileSync fs policy "{:allow #{[:cap/call 35] [:cap/call 37] [:cap/call 38] [:cap/call 39]}}" "utf8")
+    (.writeFileSync fs policy "{:allow #{[:cap/call 35] [:cap/call 37] [:cap/call 38] [:cap/call 39] [:cap/call 41]}}" "utf8")
     ;; The fixtures live in the tree the binary is packaged for. The native
     ;; loader refuses a relative request outright, so operands are absolute.
     (let [data (.join path tmp "data")]
@@ -158,22 +187,33 @@
       ;; the default 512 fuel counts almost nothing.
       (doseq [[out extra] [[exe ["--fuel" "5000000" "--string-pool" "4000000"]]]]
         (let [p (run "node" (into [kbb "--backend" "sci" packager "--code" blob "--offset" offset "--isa" "aarch64"
-                                  "--allow" "35,37,38,39"
+                                  "--allow" "35,37,38,39,41"
                                   "--fs-scope" (.realpathSync fs (.join path tmp "data"))
                                   "--output" out]
                                  extra) {})]
           (when (not= 0 (:status p)) (refuse (str "package failed: " (str (:err p))))))))
     ;; Now the only thing that matters: run it.
     (let [results
-          (for [names cases]
-            (let [argv (mapv #(if (or (str/starts-with? % "-")
+          (for [case cases]
+            (let [names (if (map? case) (:argv case) case)
+                  ;; :stdin names a fixture (or :eight-megabytes), fed to
+                  ;; BOTH binaries as standard input.
+                  input (when (map? case)
+                          (let [f (:stdin case)]
+                            (if (= f :eight-megabytes)
+                              (.repeat "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde\n" 131072)
+                              (get fixtures f))))
+                  ;; A Buffer, not a string: spawnSync applies :encoding
+                  ;; "buffer" to a string input and node refuses it.
+                  opts (if input {:input (js/Buffer.from input "utf8")} {})
+                  argv (mapv #(if (or (str/starts-with? % "-")
                                     (and (re-matches #"[0-9x]+" %)
                                          (not (contains? #{"twenty" "three" "nonl" "empty" "partial" "missing"} %))))
                                 %
                                 (.join path (.realpathSync fs (.join path tmp "data")) %))
                              names)
-                  k (run exe argv {})
-                  s (run system-head argv {})
+                  k (run exe argv opts)
+                  s (run system-head argv opts)
                   ;; stderr is compared too, now that there is a capability
                   ;; that can write it. Without this the `-n 0` case would
                   ;; pass on an empty stdout and the right exit status while
@@ -181,7 +221,8 @@
                   same? (and (= (.toString (:out k) "base64") (.toString (:out s) "base64"))
                              (= (.toString (:err k) "base64") (.toString (:err s) "base64"))
                              (= (:status k) (:status s)))]
-              {:argv names :ok same? :kotoba (.toString (:out k) "utf8")
+              {:argv (if (map? case) [(:argv case) :stdin (:stdin case)] names)
+               :ok same? :kotoba (.toString (:out k) "utf8")
                :kotoba-err (.toString (:err k) "utf8")
                :system (.toString (:out s) "utf8")
                :exit [(:status k) (:status s)]}))
@@ -191,6 +232,7 @@
                       (pr-str (:argv r))
                       " -> " (pr-str (:kotoba r))
                       (when-not (:ok r) (str " but " system-head " says " (pr-str (:system r))
-                                             " exits " (pr-str (:exit r))))))) 
+                                             " exits " (pr-str (:exit r))
+                                             " stderr " (pr-str (:kotoba-err r)))))))
       (println (pr-str {:ok (empty? bad) :cases (count results) :failed (count bad)}))
       (.exit js/process (if (seq bad) 1 0)))))
