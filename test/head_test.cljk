@@ -139,7 +139,18 @@
    ;; they are written (arena-scope around the step).
    {:argv ["-n" "200000"] :stdin :eight-megabytes}
    ;; -n 0 on stdin: the diagnostic and exit 1, nothing read.
-   {:argv ["-n" "0"] :stdin "three"}])
+   {:argv ["-n" "0"] :stdin "three"}
+   ;; --- the numeric shorthand and -c (2026-09-17) --------------------------
+   ;; `head -3` 6,176 / `-20` 6,048 / `-1` 5,967 measured; `-c N` 2,964.
+   ["-3" "twenty"] ["-1" "twenty"] ["-20" "twenty"] ["-25" "twenty"] ["-1" "partial"] ["-0" "three"]
+   ["-n3" "twenty"] ["-2" "three" "twenty"] ["-1" "missing" "three"]
+   {:argv ["-3"] :stdin "twenty"} {:argv ["-1"] :stdin "nonl"} {:argv ["-n2"] :stdin "partial"}
+   ["-c" "4" "twenty"] ["-c" "1000" "three"] ["-c4" "twenty"] ["-c" "0" "three"] ["-c" "x" "three"]
+   ["-c" "3" "three" "twenty"] ["-c" "2" "missing" "three"]
+   {:argv ["-c" "4"] :stdin "twenty"} {:argv ["-c" "100000"] :stdin "twenty"} {:argv ["-c" "5"] :stdin "nonl"}
+   {:argv ["-c" "70000"] :stdin :eight-megabytes}
+   ;; A non-numeric count in each spelling.
+   ["-n" "x" "three"] ["-nx" "three"]])
 
 (when-not amu-home (refuse "set AMU_HOME to an amu checkout"))
 (let [amu (.join path amu-home "bin" "amu")
