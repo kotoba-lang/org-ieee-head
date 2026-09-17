@@ -140,6 +140,17 @@ the pool grew as the square of the input — a chunk read at the pool's tail
 leaves the accumulator unable to tail-append — which `-n 20000` over 8 MB
 caught at exit 120.
 
+## The count, in its spellings
+
+`head -N`, `head -n N`, `head -nN`, and `head -c N` / `-cN` for bytes.
+Measured 2026-09-17 over 1,268,018 agent Bash calls: `head -3` 6,176,
+`-20` 6,048, `-1` 5,967 — the numeric shorthand dominates and was a usage
+error here until that day; `-c N` is 2,964.
+
 ## What this is not
 
-No `-c` (bytes).
+`-c` with a count that lands inside a multi-byte sequence: `/usr/bin/head`
+prints the raw partial bytes; this build cannot write a partial sequence
+(on a file it traps, on standard input it stops at the boundary before the
+cut). Counts on text are where `-c` is used; a split is the named
+divergence.
